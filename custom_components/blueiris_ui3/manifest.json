@@ -1,5 +1,8 @@
 {
   "domain": "blueiris_ui3",
   "name": "Blue Iris UI3 Backend",
+  "config_flow": true,
+  "iot_class": "local_polling",
+  "requirements": [],
   "version": "0.1.1"
 }
