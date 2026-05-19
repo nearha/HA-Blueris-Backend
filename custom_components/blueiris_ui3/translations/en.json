@@ -1,0 +1,17 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Blue Iris UI3 Backend",
+        "description": "Configure the Blue Iris server used by the UI3 card."
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect or authenticate.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This server is already configured."
+    }
+  }
+}
