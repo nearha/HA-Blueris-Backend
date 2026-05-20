@@ -2,7 +2,7 @@ import json
 import re
 import secrets
 import time
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl, urlencode, quote
 
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
@@ -13,6 +13,10 @@ from .ui3fix import async_session_status, extract_profiles
 
 TOKEN_KEY = "tokens"
 TOKEN_TTL = 3600
+
+
+def _urlencode(params):
+    return urlencode(params, quote_via=quote)
 
 
 def async_register_views(hass):
@@ -112,7 +116,7 @@ class Ui3UrlView(HomeAssistantView):
         params = {"group": q.get("group", "index"), "p": q.get("profile", "1080p VBR^"), "timeout": str(int(q.get("timeout", 0)))}
         if q.get("maximize", "1") != "0":
             params["maximize"] = "1"
-        response = web.json_response({"url": f"{_proxy_prefix(entry_id)}/ui3.htm?{urlencode(params)}"})
+        response = web.json_response({"url": f"{_proxy_prefix(entry_id)}/ui3.htm?{_urlencode(params)}"})
         response.set_cookie(_cookie_name(entry_id), token, path=_proxy_prefix(entry_id), max_age=TOKEN_TTL, httponly=True, samesite="Lax")
         return response
 
@@ -162,7 +166,7 @@ class Ui3ProxyView(HomeAssistantView):
         q.setdefault("session", sid)
         target = f"{client.base_url}/{path.lstrip('/')}"
         if q:
-            target += "?" + urlencode(q)
+            target += "?" + _urlencode(q)
         try:
             upstream = await client._session.request(request.method, target, data=await request.read() if request.can_read_body else None)
         except Exception as err:
