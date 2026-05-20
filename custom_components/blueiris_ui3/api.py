@@ -9,7 +9,7 @@ from homeassistant.components.http import HomeAssistantView
 
 from .blueiris import BlueIrisError, groups_from_camlist
 from .const import DATA_CLIENTS, DEFAULT_PROFILES, DOMAIN
-from .ui3fix import async_session_status
+from .ui3fix import async_session_status, extract_profiles
 
 TOKEN_KEY = "tokens"
 TOKEN_TTL = 3600
@@ -90,8 +90,14 @@ class ProfilesView(HomeAssistantView):
     requires_auth = True
 
     async def get(self, request, entry_id):
-        _client(request.app["hass"], entry_id)
-        return self.json({"profiles": DEFAULT_PROFILES, "default_profile": "1080p^"})
+        client = _client(request.app["hass"], entry_id)
+        try:
+            status = await async_session_status(client)
+            profiles = extract_profiles(status, DEFAULT_PROFILES)
+        except Exception:
+            profiles = DEFAULT_PROFILES
+        default_profile = "1080p VBR^" if any(p.get("id") == "1080p VBR^" for p in profiles) else "1080p^"
+        return self.json({"profiles": profiles, "default_profile": default_profile})
 
 
 class Ui3UrlView(HomeAssistantView):
@@ -103,7 +109,7 @@ class Ui3UrlView(HomeAssistantView):
         _client(request.app["hass"], entry_id)
         token = _new_token(request.app["hass"], entry_id)
         q = request.query
-        params = {"group": q.get("group", "index"), "p": q.get("profile", "1080p^"), "timeout": str(int(q.get("timeout", 0)))}
+        params = {"group": q.get("group", "index"), "p": q.get("profile", "1080p VBR^"), "timeout": str(int(q.get("timeout", 0)))}
         if q.get("maximize", "1") != "0":
             params["maximize"] = "1"
         response = web.json_response({"url": f"{_proxy_prefix(entry_id)}/ui3.htm?{urlencode(params)}"})
