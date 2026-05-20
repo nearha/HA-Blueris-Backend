@@ -19,6 +19,23 @@ def _urlencode(params):
     return urlencode(params, quote_via=quote)
 
 
+def _query_with_session(raw_query, session):
+    raw = raw_query or ""
+    has_session = any(k == "session" for k, _ in parse_qsl(raw, keep_blank_values=True))
+    if has_session:
+        return raw
+    sep = "&" if raw else ""
+    return f"{raw}{sep}session={quote(session)}"
+
+
+def _copy_headers(upstream):
+    headers = {}
+    for key in ("Content-Type", "Cache-Control", "Content-Length", "Accept-Ranges"):
+        if upstream.headers.get(key):
+            headers[key] = upstream.headers[key]
+    return headers
+
+
 def async_register_views(hass):
     hass.http.register_view(EntriesView)
     hass.http.register_view(GroupsView)
@@ -141,16 +158,32 @@ class Ui3ProxyView(HomeAssistantView):
         return await self._proxy_upstream(request, client, entry_id, path)
 
     async def _proxy_json(self, request, client):
+        # GET JSON calls from UI3 are proxied as GET, preserving the exact query string.
+        # This avoids changing UI3 command semantics and keeps coordinate/target params intact.
+        if request.method == "GET":
+            body = dict(request.query)
+            try:
+                if body.get("cmd") == "login":
+                    return web.json_response(await async_session_status(client))
+                sid = await client.async_login()
+                target = f"{client.base_url}/json?{_query_with_session(request.query_string, sid)}"
+                upstream = await client._session.get(target)
+                data = await upstream.read()
+            except BlueIrisError as err:
+                raise web.HTTPBadGateway(reason=str(err)) from err
+            except Exception as err:
+                raise web.HTTPBadGateway(reason=str(err)) from err
+            return web.Response(body=data, status=upstream.status, headers=_copy_headers(upstream))
+
         body = dict(request.query)
-        if request.method == "POST":
-            text = await request.text()
-            if text:
-                try:
-                    parsed = json.loads(text)
-                    if isinstance(parsed, dict):
-                        body.update(parsed)
-                except json.JSONDecodeError:
-                    body.update(dict(parse_qsl(text, keep_blank_values=True)))
+        text = await request.text()
+        if text:
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    body.update(parsed)
+            except json.JSONDecodeError:
+                body.update(dict(parse_qsl(text, keep_blank_values=True)))
         try:
             if body.get("cmd") == "login":
                 return web.json_response(await async_session_status(client))
@@ -165,11 +198,10 @@ class Ui3ProxyView(HomeAssistantView):
             sid = await client.async_login()
         except BlueIrisError as err:
             raise web.HTTPBadGateway(reason=str(err)) from err
-        q = dict(parse_qsl(request.query_string, keep_blank_values=True))
-        q.setdefault("session", sid)
         target = f"{client.base_url}/{path.lstrip('/')}"
-        if q:
-            target += "?" + _urlencode(q)
+        qs = _query_with_session(request.query_string, sid)
+        if qs:
+            target += "?" + qs
         try:
             upstream = await client._session.request(request.method, target, data=await request.read() if request.can_read_body else None)
         except Exception as err:
@@ -189,9 +221,8 @@ class Ui3ProxyView(HomeAssistantView):
             except Exception:
                 pass
             return web.Response(body=body, status=upstream.status, headers=headers)
-        headers = {}
-        if ctype:
-            headers["Content-Type"] = ctype
+        headers = _copy_headers(upstream)
+        headers.pop("Content-Length", None)
         stream = web.StreamResponse(status=upstream.status, headers=headers)
         await stream.prepare(request)
         async for chunk in upstream.content.iter_chunked(65536):
