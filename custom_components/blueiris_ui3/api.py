@@ -20,12 +20,16 @@ def _urlencode(params):
 
 
 def _query_with_session(raw_query, session):
-    raw = raw_query or ""
-    has_session = any(k == "session" for k, _ in parse_qsl(raw, keep_blank_values=True))
-    if has_session:
-        return raw
-    sep = "&" if raw else ""
-    return f"{raw}{sep}session={quote(session)}"
+    parts = []
+    for part in (raw_query or "").split("&"):
+        if not part:
+            continue
+        key = part.split("=", 1)[0].lower()
+        if key == "session":
+            continue
+        parts.append(part)
+    parts.append("session=" + quote(session))
+    return "&".join(parts)
 
 
 def _copy_headers(upstream):
@@ -43,6 +47,14 @@ def _request_headers(request):
         if value:
             headers[key] = value
     return headers
+
+
+def _upstream_url(client, path, request, session):
+    target = f"{client.base_url}/{path.lstrip('/')}"
+    qs = _query_with_session(request.query_string, session)
+    if qs:
+        target += "?" + qs
+    return target
 
 
 def async_register_views(hass):
@@ -207,18 +219,24 @@ class Ui3ProxyView(HomeAssistantView):
             sid = await client.async_login()
         except BlueIrisError as err:
             raise web.HTTPBadGateway(reason=str(err)) from err
-        target = f"{client.base_url}/{path.lstrip('/')}"
-        qs = _query_with_session(request.query_string, sid)
-        if qs:
-            target += "?" + qs
         try:
             upstream = await client._session.request(
                 request.method,
-                target,
+                _upstream_url(client, path, request, sid),
                 data=await request.read() if request.can_read_body else None,
                 headers=_request_headers(request),
                 timeout=None,
             )
+            if path.lower().startswith("video/") and upstream.status in (401, 403, 503):
+                upstream.release()
+                sid = await client.async_login(force=True)
+                upstream = await client._session.request(
+                    request.method,
+                    _upstream_url(client, path, request, sid),
+                    data=None,
+                    headers=_request_headers(request),
+                    timeout=None,
+                )
         except Exception as err:
             raise web.HTTPBadGateway(reason=str(err)) from err
         ctype = upstream.headers.get("Content-Type", "")
