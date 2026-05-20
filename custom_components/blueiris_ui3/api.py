@@ -45,6 +45,19 @@ def _query_with_session(raw_query, session):
     return "&".join(parts)
 
 
+def _ui3_query(query, session):
+    params = {
+        "group": query.get("group", "index"),
+        "p": query.get("profile", query.get("p", "1080p VBR^")),
+        "timeout": str(int(query.get("timeout", 0))),
+        "session": session,
+        "ha_nocache": str(int(time.time() * 1000)),
+    }
+    if query.get("maximize", "1") != "0":
+        params["maximize"] = "1"
+    return params
+
+
 def _copy_headers(upstream):
     headers = {}
     for key, value in upstream.headers.items():
@@ -76,6 +89,7 @@ def async_register_views(hass):
     hass.http.register_view(GroupsView)
     hass.http.register_view(ProfilesView)
     hass.http.register_view(Ui3UrlView)
+    hass.http.register_view(DirectUi3RedirectView)
     hass.http.register_view(Ui3ProxyView)
 
 
@@ -206,6 +220,20 @@ class ProfilesView(HomeAssistantView):
             profiles = DEFAULT_PROFILES
         default_profile = "1080p VBR^" if any(p.get("id") == "1080p VBR^" for p in profiles) else "1080p^"
         return self.json({"profiles": profiles, "default_profile": default_profile})
+
+
+class DirectUi3RedirectView(HomeAssistantView):
+    url = "/api/blueiris_ui3/{entry_id}/direct_ui3"
+    name = "api:blueiris_ui3:direct_ui3"
+    requires_auth = True
+
+    async def get(self, request, entry_id):
+        client = _client(request.app["hass"], entry_id)
+        try:
+            sid = await client.async_login(force=True)
+        except BlueIrisError as err:
+            raise web.HTTPBadGateway(reason=str(err)) from err
+        raise web.HTTPFound(f"{client.base_url}/ui3.htm?{_urlencode(_ui3_query(request.query, sid))}")
 
 
 class Ui3UrlView(HomeAssistantView):
