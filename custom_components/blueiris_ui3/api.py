@@ -8,6 +8,7 @@ from homeassistant.components.http import HomeAssistantView
 
 from .blueiris import BlueIrisError, groups_from_camlist
 from .const import DATA_CLIENTS, DEFAULT_PROFILES, DOMAIN
+from .ui3fix import async_session_status
 
 TOKEN_KEY = "tokens"
 TOKEN_TTL = 3600
@@ -128,8 +129,7 @@ class Ui3ProxyView(HomeAssistantView):
             body = {"cmd": request.query.get("cmd", "")}
         try:
             if body.get("cmd") == "login":
-                sid = await client.async_login()
-                return web.json_response({"result": "success", "session": sid})
+                return web.json_response(await async_session_status(client))
             body["session"] = await client.async_login()
             payload = await client._post_json(body)
         except BlueIrisError as err:
