@@ -12,7 +12,7 @@ from .const import DATA_CLIENTS, DEFAULT_PROFILES, DOMAIN
 from .ui3fix import async_session_status, extract_profiles
 
 TOKEN_KEY = "tokens"
-TOKEN_TTL = 3600
+TOKEN_TTL = 600
 
 
 def _urlencode(params):
@@ -30,9 +30,18 @@ def _query_with_session(raw_query, session):
 
 def _copy_headers(upstream):
     headers = {}
-    for key in ("Content-Type", "Cache-Control", "Content-Length", "Accept-Ranges"):
+    for key in ("Content-Type", "Cache-Control", "Accept-Ranges", "ETag", "Last-Modified"):
         if upstream.headers.get(key):
             headers[key] = upstream.headers[key]
+    return headers
+
+
+def _request_headers(request):
+    headers = {}
+    for key in ("Accept", "Range", "If-Range", "Cache-Control", "Pragma", "User-Agent"):
+        value = request.headers.get(key)
+        if value:
+            headers[key] = value
     return headers
 
 
@@ -56,7 +65,12 @@ def _client(hass, entry_id):
 
 
 def _tokens(hass):
-    return hass.data[DOMAIN].setdefault(TOKEN_KEY, {})
+    tokens = hass.data[DOMAIN].setdefault(TOKEN_KEY, {})
+    now = time.time()
+    for token, data in list(tokens.items()):
+        if now > float(data.get("expires", 0)):
+            tokens.pop(token, None)
+    return tokens
 
 
 def _cookie_name(entry_id):
@@ -78,9 +92,6 @@ def _check_cookie(request, entry_id):
     data = _tokens(request.app["hass"]).get(token)
     if not data or data.get("entry_id") != entry_id:
         raise web.HTTPUnauthorized(reason="Invalid UI3 proxy token")
-    if time.time() > float(data.get("expires", 0)):
-        _tokens(request.app["hass"]).pop(token, None)
-        raise web.HTTPUnauthorized(reason="Expired UI3 proxy token")
 
 
 class EntriesView(HomeAssistantView):
@@ -158,8 +169,6 @@ class Ui3ProxyView(HomeAssistantView):
         return await self._proxy_upstream(request, client, entry_id, path)
 
     async def _proxy_json(self, request, client):
-        # GET JSON calls from UI3 are proxied as GET, preserving the exact query string.
-        # This avoids changing UI3 command semantics and keeps coordinate/target params intact.
         if request.method == "GET":
             body = dict(request.query)
             try:
@@ -167,7 +176,7 @@ class Ui3ProxyView(HomeAssistantView):
                     return web.json_response(await async_session_status(client))
                 sid = await client.async_login()
                 target = f"{client.base_url}/json?{_query_with_session(request.query_string, sid)}"
-                upstream = await client._session.get(target)
+                upstream = await client._session.get(target, headers=_request_headers(request), timeout=None)
                 data = await upstream.read()
             except BlueIrisError as err:
                 raise web.HTTPBadGateway(reason=str(err)) from err
@@ -203,7 +212,13 @@ class Ui3ProxyView(HomeAssistantView):
         if qs:
             target += "?" + qs
         try:
-            upstream = await client._session.request(request.method, target, data=await request.read() if request.can_read_body else None)
+            upstream = await client._session.request(
+                request.method,
+                target,
+                data=await request.read() if request.can_read_body else None,
+                headers=_request_headers(request),
+                timeout=None,
+            )
         except Exception as err:
             raise web.HTTPBadGateway(reason=str(err)) from err
         ctype = upstream.headers.get("Content-Type", "")
@@ -222,10 +237,15 @@ class Ui3ProxyView(HomeAssistantView):
                 pass
             return web.Response(body=body, status=upstream.status, headers=headers)
         headers = _copy_headers(upstream)
-        headers.pop("Content-Length", None)
         stream = web.StreamResponse(status=upstream.status, headers=headers)
         await stream.prepare(request)
-        async for chunk in upstream.content.iter_chunked(65536):
-            await stream.write(chunk)
-        await stream.write_eof()
+        try:
+            async for chunk in upstream.content.iter_chunked(65536):
+                await stream.write(chunk)
+        except ConnectionResetError:
+            pass
+        try:
+            await stream.write_eof()
+        except ConnectionResetError:
+            pass
         return stream
