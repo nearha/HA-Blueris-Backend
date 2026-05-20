@@ -8,6 +8,7 @@ async def async_session_status(client):
 
 
 _VIDEO_PROFILE_RE = re.compile(r"^(?:\d{3,4}p|4k)(?:\s+vbr)?\^?$", re.IGNORECASE)
+_NUMERIC_VBR_RE = re.compile(r"^(\d{3,4}p)\s+vbr\^?$", re.IGNORECASE)
 _BAD_PROFILE_WORDS = {
     "active",
     "inactive",
@@ -36,10 +37,18 @@ def _normalize_profile(item_id, item_name=""):
     raw_id = _clean_profile_id(item_id)
     raw_name = str(item_name or raw_id).strip()
     key = raw_id.lower().replace(" ", "")
+
     if key in ("4k", "4k^"):
-        return "2160p^", raw_name if raw_name and raw_name.lower() not in ("4k", "4k^") else "4K"
+        return "2160p^", "4K"
     if key in ("4kvbr", "4kvbr^"):
-        return "2160p VBR^", raw_name if raw_name and raw_name.lower() not in ("4k vbr", "4k vbr^") else "4K VBR"
+        return "2160p VBR^", "4K VBR"
+
+    match = _NUMERIC_VBR_RE.match(raw_id)
+    if match:
+        normalized_id = f"{match.group(1).lower()} VBR^"
+        label = raw_name.rstrip("^") if raw_name else normalized_id.rstrip("^")
+        return normalized_id, label
+
     return raw_id, raw_name or raw_id
 
 
