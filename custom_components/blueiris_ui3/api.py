@@ -1,4 +1,5 @@
 import json
+import re
 import secrets
 import time
 from urllib.parse import parse_qsl, urlencode
@@ -117,7 +118,7 @@ class Ui3ProxyView(HomeAssistantView):
         path = tail or "ui3.htm"
         if path.lower() == "json" or path.lower().endswith("/json"):
             return await self._proxy_json(request, client)
-        return await self._proxy_file(request, client, path)
+        return await self._proxy_file(request, client, entry_id, token, path)
 
     async def _proxy_json(self, request, client):
         if request.method == "POST":
@@ -136,7 +137,7 @@ class Ui3ProxyView(HomeAssistantView):
             raise web.HTTPBadGateway(reason=str(err)) from err
         return web.json_response(payload)
 
-    async def _proxy_file(self, request, client, path):
+    async def _proxy_file(self, request, client, entry_id, token, path):
         try:
             sid = await client.async_login()
         except BlueIrisError as err:
@@ -152,8 +153,21 @@ class Ui3ProxyView(HomeAssistantView):
         except Exception as err:
             raise web.HTTPBadGateway(reason=str(err)) from err
         headers = {}
-        if upstream.headers.get("Content-Type"):
-            headers["Content-Type"] = upstream.headers["Content-Type"]
+        ctype = upstream.headers.get("Content-Type", "")
+        if ctype:
+            headers["Content-Type"] = ctype
         if upstream.headers.get("Cache-Control"):
             headers["Cache-Control"] = upstream.headers["Cache-Control"]
+        if path.lower().endswith("ui3.htm") or "text/html" in ctype.lower():
+            prefix = f"api/blueiris_ui3/{entry_id}/proxy/{token}"
+            try:
+                text = body.decode("utf-8", "replace")
+                replacement = f'var appPath_raw = "{prefix}";'
+                text, count = re.subn(r"var\s+appPath_raw\s*=\s*['\"][^'\"]*['\"]\s*;", replacement, text, count=1)
+                if count == 0:
+                    text = text.replace("</head>", f"<script>{replacement}</script></head>")
+                body = text.encode("utf-8")
+                headers["Content-Type"] = "text/html; charset=utf-8"
+            except Exception:
+                pass
         return web.Response(body=body, status=upstream.status, headers=headers)
