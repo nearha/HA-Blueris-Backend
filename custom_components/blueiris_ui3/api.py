@@ -38,19 +38,28 @@ def _tokens(hass):
     return hass.data[DOMAIN].setdefault(TOKEN_KEY, {})
 
 
+def _cookie_name(entry_id):
+    return "bi_ui3_" + entry_id.lower()
+
+
+def _proxy_prefix(entry_id):
+    return f"/api/blueiris_ui3/{entry_id}/proxy"
+
+
 def _new_token(hass, entry_id):
     token = secrets.token_urlsafe(24)
     _tokens(hass)[token] = {"entry_id": entry_id, "expires": time.time() + TOKEN_TTL}
     return token
 
 
-def _check_token(hass, entry_id, token):
-    data = _tokens(hass).get(token)
+def _check_cookie(request, entry_id):
+    token = request.cookies.get(_cookie_name(entry_id), "")
+    data = _tokens(request.app["hass"]).get(token)
     if not data or data.get("entry_id") != entry_id:
-        raise web.HTTPUnauthorized(reason="Invalid proxy token")
+        raise web.HTTPUnauthorized(reason="Invalid UI3 proxy token")
     if time.time() > float(data.get("expires", 0)):
-        _tokens(hass).pop(token, None)
-        raise web.HTTPUnauthorized(reason="Expired proxy token")
+        _tokens(request.app["hass"]).pop(token, None)
+        raise web.HTTPUnauthorized(reason="Expired UI3 proxy token")
 
 
 class EntriesView(HomeAssistantView):
@@ -97,28 +106,29 @@ class Ui3UrlView(HomeAssistantView):
         params = {"group": q.get("group", "index"), "p": q.get("profile", "1080p^"), "timeout": str(int(q.get("timeout", 0)))}
         if q.get("maximize", "1") != "0":
             params["maximize"] = "1"
-        return self.json({"url": f"/api/blueiris_ui3/{entry_id}/proxy/{token}/ui3.htm?{urlencode(params)}"})
+        response = web.json_response({"url": f"{_proxy_prefix(entry_id)}/ui3.htm?{urlencode(params)}"})
+        response.set_cookie(_cookie_name(entry_id), token, path=_proxy_prefix(entry_id), max_age=TOKEN_TTL, httponly=True, samesite="Lax")
+        return response
 
 
 class Ui3ProxyView(HomeAssistantView):
-    url = "/api/blueiris_ui3/{entry_id}/proxy/{token}/{tail:.*}"
+    url = "/api/blueiris_ui3/{entry_id}/proxy/{tail:.*}"
     name = "api:blueiris_ui3:proxy"
     requires_auth = False
 
-    async def get(self, request, entry_id, token, tail):
-        return await self._proxy(request, entry_id, token, tail)
+    async def get(self, request, entry_id, tail):
+        return await self._proxy(request, entry_id, tail)
 
-    async def post(self, request, entry_id, token, tail):
-        return await self._proxy(request, entry_id, token, tail)
+    async def post(self, request, entry_id, tail):
+        return await self._proxy(request, entry_id, tail)
 
-    async def _proxy(self, request, entry_id, token, tail):
-        hass = request.app["hass"]
-        _check_token(hass, entry_id, token)
-        client = _client(hass, entry_id)
+    async def _proxy(self, request, entry_id, tail):
+        _check_cookie(request, entry_id)
+        client = _client(request.app["hass"], entry_id)
         path = tail or "ui3.htm"
         if path.lower() == "json" or path.lower().endswith("/json"):
             return await self._proxy_json(request, client)
-        return await self._proxy_file(request, client, entry_id, token, path)
+        return await self._proxy_upstream(request, client, entry_id, path)
 
     async def _proxy_json(self, request, client):
         if request.method == "POST":
@@ -137,7 +147,7 @@ class Ui3ProxyView(HomeAssistantView):
             raise web.HTTPBadGateway(reason=str(err)) from err
         return web.json_response(payload)
 
-    async def _proxy_file(self, request, client, entry_id, token, path):
+    async def _proxy_upstream(self, request, client, entry_id, path):
         try:
             sid = await client.async_login()
         except BlueIrisError as err:
@@ -148,26 +158,30 @@ class Ui3ProxyView(HomeAssistantView):
         if q:
             target += "?" + urlencode(q)
         try:
-            upstream = await client._session.request(request.method, target)
-            body = await upstream.read()
+            upstream = await client._session.request(request.method, target, data=await request.read() if request.can_read_body else None)
         except Exception as err:
             raise web.HTTPBadGateway(reason=str(err)) from err
-        headers = {}
         ctype = upstream.headers.get("Content-Type", "")
-        if ctype:
-            headers["Content-Type"] = ctype
-        if upstream.headers.get("Cache-Control"):
-            headers["Cache-Control"] = upstream.headers["Cache-Control"]
         if path.lower().endswith("ui3.htm") or "text/html" in ctype.lower():
-            prefix = f"api/blueiris_ui3/{entry_id}/proxy/{token}"
+            body = await upstream.read()
+            headers = {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store"}
             try:
                 text = body.decode("utf-8", "replace")
-                replacement = f'var appPath_raw = "{prefix}";'
+                virt = _proxy_prefix(entry_id).lstrip("/")
+                replacement = f'var appPath_raw = "{virt}";'
                 text, count = re.subn(r"var\s+appPath_raw\s*=\s*['\"][^'\"]*['\"]\s*;", replacement, text, count=1)
                 if count == 0:
                     text = text.replace("</head>", f"<script>{replacement}</script></head>")
                 body = text.encode("utf-8")
-                headers["Content-Type"] = "text/html; charset=utf-8"
             except Exception:
                 pass
-        return web.Response(body=body, status=upstream.status, headers=headers)
+            return web.Response(body=body, status=upstream.status, headers=headers)
+        headers = {}
+        if ctype:
+            headers["Content-Type"] = ctype
+        stream = web.StreamResponse(status=upstream.status, headers=headers)
+        await stream.prepare(request)
+        async for chunk in upstream.content.iter_chunked(65536):
+            await stream.write(chunk)
+        await stream.write_eof()
+        return stream
