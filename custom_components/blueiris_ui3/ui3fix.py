@@ -32,6 +32,17 @@ def _clean_profile_id(value):
     return text
 
 
+def _normalize_profile(item_id, item_name=""):
+    raw_id = _clean_profile_id(item_id)
+    raw_name = str(item_name or raw_id).strip()
+    key = raw_id.lower().replace(" ", "")
+    if key in ("4k", "4k^"):
+        return "2160p^", raw_name if raw_name and raw_name.lower() not in ("4k", "4k^") else "4K"
+    if key in ("4kvbr", "4kvbr^"):
+        return "2160p VBR^", raw_name if raw_name and raw_name.lower() not in ("4k vbr", "4k vbr^") else "4K VBR"
+    return raw_id, raw_name or raw_id
+
+
 def _looks_like_video_profile(value):
     text = _clean_profile_id(value)
     return bool(text and _VIDEO_PROFILE_RE.match(text))
@@ -65,6 +76,9 @@ def extract_profiles(payload, fallback):
             ).strip()
         else:
             return
+        if not _looks_like_video_profile(item_id):
+            return
+        item_id, item_name = _normalize_profile(item_id, item_name)
         if not _looks_like_video_profile(item_id):
             return
         key = item_id.lower()
