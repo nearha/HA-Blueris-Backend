@@ -216,7 +216,7 @@ class Ui3ProxyView(HomeAssistantView):
 
     async def _proxy_upstream(self, request, client, entry_id, path):
         try:
-            sid = await client.async_login()
+            sid = await client.async_login(force=path.lower().endswith("ui3.htm"))
         except BlueIrisError as err:
             raise web.HTTPBadGateway(reason=str(err)) from err
         try:
