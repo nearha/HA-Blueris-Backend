@@ -13,6 +13,19 @@ from .ui3fix import async_session_status, extract_profiles
 
 TOKEN_KEY = "tokens"
 TOKEN_TTL = 600
+HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+    "content-encoding",
+    "content-length",
+}
 
 
 def _urlencode(params):
@@ -34,9 +47,10 @@ def _query_with_session(raw_query, session):
 
 def _copy_headers(upstream):
     headers = {}
-    for key in ("Content-Type", "Cache-Control", "Accept-Ranges", "ETag", "Last-Modified"):
-        if upstream.headers.get(key):
-            headers[key] = upstream.headers[key]
+    for key, value in upstream.headers.items():
+        if key.lower() in HOP_BY_HOP_HEADERS:
+            continue
+        headers[key] = value
     return headers
 
 
