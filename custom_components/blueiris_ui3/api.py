@@ -141,13 +141,16 @@ class Ui3ProxyView(HomeAssistantView):
         return await self._proxy_upstream(request, client, entry_id, path)
 
     async def _proxy_json(self, request, client):
+        body = dict(request.query)
         if request.method == "POST":
-            try:
-                body = json.loads(await request.text() or "{}")
-            except json.JSONDecodeError:
-                body = {}
-        else:
-            body = {"cmd": request.query.get("cmd", "")}
+            text = await request.text()
+            if text:
+                try:
+                    parsed = json.loads(text)
+                    if isinstance(parsed, dict):
+                        body.update(parsed)
+                except json.JSONDecodeError:
+                    body.update(dict(parse_qsl(text, keep_blank_values=True)))
         try:
             if body.get("cmd") == "login":
                 return web.json_response(await async_session_status(client))
