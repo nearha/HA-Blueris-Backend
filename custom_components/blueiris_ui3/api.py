@@ -317,12 +317,15 @@ class Ui3ProxyView(HomeAssistantView):
                     return _set_proxy_cookie(response, request, entry_id, token)
                 target = f"{client.base_url}/json?{_query_with_session(request.query_string, sid)}"
                 upstream = await client._session.get(target, headers=_request_headers(request), timeout=None)
-                if upstream.status in (401, 403, 503):
+                try:
+                    if upstream.status in (401, 403, 503):
+                        upstream.release()
+                        sid = await _token_session(client, token_data, force=True)
+                        target = f"{client.base_url}/json?{_query_with_session(request.query_string, sid)}"
+                        upstream = await client._session.get(target, headers=_request_headers(request), timeout=None)
+                    data = await upstream.read()
+                finally:
                     upstream.release()
-                    sid = await _token_session(client, token_data, force=True)
-                    target = f"{client.base_url}/json?{_query_with_session(request.query_string, sid)}"
-                    upstream = await client._session.get(target, headers=_request_headers(request), timeout=None)
-                data = await upstream.read()
             except BlueIrisError as err:
                 raise web.HTTPBadGateway(reason=str(err)) from err
             except Exception as err:
@@ -355,6 +358,7 @@ class Ui3ProxyView(HomeAssistantView):
         return _set_proxy_cookie(response, request, entry_id, token)
 
     async def _proxy_upstream(self, request, client, entry_id, token, token_data, path):
+        upstream = None
         try:
             sid = await _token_session(client, token_data)
         except BlueIrisError as err:
@@ -369,6 +373,7 @@ class Ui3ProxyView(HomeAssistantView):
             )
             if path.lower().startswith("video/") and upstream.status in (401, 403, 503):
                 upstream.release()
+                upstream = None
                 sid = await _token_session(client, token_data, force=True)
                 upstream = await client._session.request(
                     request.method,
@@ -378,10 +383,15 @@ class Ui3ProxyView(HomeAssistantView):
                     timeout=None,
                 )
         except Exception as err:
+            if upstream is not None:
+                upstream.release()
             raise web.HTTPBadGateway(reason=str(err)) from err
         ctype = upstream.headers.get("Content-Type", "")
         if path.lower().endswith("ui3.htm") or "text/html" in ctype.lower():
-            body = await upstream.read()
+            try:
+                body = await upstream.read()
+            finally:
+                upstream.release()
             headers = {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store"}
             try:
                 text = body.decode("utf-8", "replace")
@@ -402,10 +412,12 @@ class Ui3ProxyView(HomeAssistantView):
         try:
             async for chunk in upstream.content.iter_chunked(65536):
                 await stream.write(chunk)
-        except ConnectionResetError:
+        except (ConnectionResetError, RuntimeError, asyncio.CancelledError):
             pass
+        finally:
+            upstream.close()
         try:
             await stream.write_eof()
-        except ConnectionResetError:
+        except (ConnectionResetError, RuntimeError):
             pass
         return stream
