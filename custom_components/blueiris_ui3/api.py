@@ -14,7 +14,6 @@ from .ui3fix import async_session_status, extract_profiles
 
 TOKEN_KEY = "tokens"
 TOKEN_TTL = 3600
-DIRECT_TOKEN_TTL = 120
 HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -45,19 +44,6 @@ def _query_with_session(raw_query, session):
         parts.append(part)
     parts.append("session=" + quote(session))
     return "&".join(parts)
-
-
-def _ui3_query(query, session):
-    params = {
-        "group": query.get("group", "index"),
-        "p": query.get("profile", query.get("p", "1080p VBR^")),
-        "timeout": str(int(query.get("timeout", 0))),
-        "session": session,
-        "ha_nocache": str(int(time.time() * 1000)),
-    }
-    if query.get("maximize", "1") != "0":
-        params["maximize"] = "1"
-    return params
 
 
 def _copy_headers(upstream):
@@ -91,8 +77,6 @@ def async_register_views(hass):
     hass.http.register_view(GroupsView)
     hass.http.register_view(ProfilesView)
     hass.http.register_view(Ui3UrlView)
-    hass.http.register_view(DirectUi3UrlView)
-    hass.http.register_view(DirectUi3RedirectView)
     hass.http.register_view(Ui3ProxyView)
 
 
@@ -133,24 +117,6 @@ def _new_token(hass, entry_id, bi_session=""):
         "bi_session": bi_session,
     }
     return token
-
-
-def _new_direct_token(hass, entry_id, query):
-    token = secrets.token_urlsafe(24)
-    _tokens(hass)[token] = {
-        "entry_id": entry_id,
-        "expires": time.time() + DIRECT_TOKEN_TTL,
-        "direct": True,
-        "query": dict(query),
-    }
-    return token
-
-
-def _take_direct_token(hass, entry_id, token):
-    data = _tokens(hass).pop(token, None)
-    if not data or data.get("entry_id") != entry_id or data.get("direct") is not True:
-        raise web.HTTPUnauthorized(reason="Invalid direct UI3 token")
-    return data
 
 
 def _touch_token_data(data):
@@ -241,32 +207,6 @@ class ProfilesView(HomeAssistantView):
             profiles = DEFAULT_PROFILES
         default_profile = "1080p VBR^" if any(p.get("id") == "1080p VBR^" for p in profiles) else "1080p^"
         return self.json({"profiles": profiles, "default_profile": default_profile})
-
-
-class DirectUi3UrlView(HomeAssistantView):
-    url = "/api/blueiris_ui3/{entry_id}/direct_ui3_url"
-    name = "api:blueiris_ui3:direct_ui3_url"
-    requires_auth = True
-
-    async def get(self, request, entry_id):
-        _client(request.app["hass"], entry_id)
-        token = _new_direct_token(request.app["hass"], entry_id, request.query)
-        return self.json({"url": f"/api/blueiris_ui3/{entry_id}/direct_ui3?token={quote(token)}"})
-
-
-class DirectUi3RedirectView(HomeAssistantView):
-    url = "/api/blueiris_ui3/{entry_id}/direct_ui3"
-    name = "api:blueiris_ui3:direct_ui3"
-    requires_auth = False
-
-    async def get(self, request, entry_id):
-        data = _take_direct_token(request.app["hass"], entry_id, request.query.get("token", ""))
-        client = _client(request.app["hass"], entry_id)
-        try:
-            sid = await client.async_login(force=True)
-        except BlueIrisError as err:
-            raise web.HTTPBadGateway(reason=str(err)) from err
-        raise web.HTTPFound(f"{client.base_url}/ui3.htm?{_urlencode(_ui3_query(data.get('query', {}), sid))}")
 
 
 class Ui3UrlView(HomeAssistantView):
