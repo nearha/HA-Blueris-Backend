@@ -113,6 +113,15 @@ class BlueIrisClient:
             return data["session"]
         return ""
 
+def _group_display_name(group_id, raw_name):
+    name = str(raw_name or group_id).strip()
+    if name.startswith("+"):
+        name = name[1:].strip()
+    if str(group_id).strip().lower() == "index" or name.lower() in {"all cameras", "all"}:
+        return "Todas"
+    return name or group_id
+
+
 def groups_from_camlist(payload):
     groups = []
     seen = set()
@@ -129,10 +138,8 @@ def groups_from_camlist(payload):
         if key in seen:
             continue
         seen.add(key)
-        name = str(item.get("optionDisplay") or item.get("name") or group_id).strip()
-        if name.startswith("+"):
-            name = name[1:].strip()
-        groups.append({"id": group_id, "name": name or group_id})
+        name = _group_display_name(group_id, item.get("optionDisplay") or item.get("name") or group_id)
+        groups.append({"id": group_id, "name": name})
     if "index" not in seen:
         groups.insert(0, {"id": "index", "name": "Todas"})
     return groups
